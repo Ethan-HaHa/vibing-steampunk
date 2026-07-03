@@ -55,8 +55,11 @@ git -C D:/GitHub/vibing-steampunk log --oneline -10
 
 **验证口径**：
 - ✅ `go build ./internal/mcp/` 编译通过。
-- ⚠️ **`revisions` / `revision_source` / `compare_versions` 三个 action 尚未用真实 SAP 调用实测**。本次会话的"读取函数历史版本 33"操作走的是 `query` + `CALL_RFC`，没有走新接入的路由。
-- **TODO**：下次会话用 `SAP(action="revisions", target="FUNC ZDEMO_FUNC", params={"parent": "ZDEMO_FGROUP"})` 实测一遍，确认路由命中、参数透传、URI 拼装都没问题，再回填本条目。
+- ✅ **2026-07-03 用真实 SAP 系统实测三个 action 全部通过**（被测对象：函数组 `ZDEMO_FGROUP` 下的函数 `ZDEMO_FUNC`，对比 v33 vs 当前活动版本）：
+  - `revisions`：返回全部 36 个版本（`00001`~`00035` + 活动版本 `00000`），字段齐全（`uri` / `version` / `versionTitle` / `date` / `author` / `transport`），按修改时间倒序。
+  - `revision_source`：仅凭 `version_uri` 取到 v33 完整源码，无需 target —— 验证了"version_uri 已唯一指向版本、target 是冗余"的设计。
+  - `compare_versions`：传 `version1_uri`（v33）、不传 `version2_uri`，成功 diff 当前活动版本。返回 `object1` / `object2` / `identical` / `addedLines` / `removedLines` / `diff`（unified diff 格式），统计与人工读 diff 一致。
+  - 路由命中、参数透传、URI 拼装均无问题。FUNC 类型透传 `parent` 也正常。
 
 **踩坑 / 注意事项**：
 - 接入新 action 时**必须同步 help.go 三处**：顶层 Actions 列表、`case "<action>"` 详细页、`getUnhandledErrorMessage` 的 Valid actions 列表。本次差点漏掉第三处。
