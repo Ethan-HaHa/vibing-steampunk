@@ -71,6 +71,7 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 
 	routes := []routeFunc{
 		s.routeSourceAction,
+		s.routeRevisionsAction,
 		s.routeReadAction,
 		s.routeSearchAction,
 		s.routeGrepAction,

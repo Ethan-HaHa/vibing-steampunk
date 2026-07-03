@@ -254,6 +254,26 @@ Dependency graph & boundary analysis:
   SAP(action="analyze", params={"type": "check_boundaries", "source": "REPORT z.\nCALL FUNCTION 'Z_FM'.", "package": "$Z"})
   SAP(action="analyze", params={"type": "graph_stats", "source": "REPORT z.\nDATA lo TYPE REF TO zcl_x."})`)
 
+	case "revisions":
+		return mcp.NewToolResultText(`SAP(action="revisions") - Object version history
+
+List versions:
+  SAP(action="revisions", target="CLAS ZCL_TEST")
+  SAP(action="revisions", target="FUNC ZGET_DATA", params={"parent": "ZFUNC_GROUP"})
+  SAP(action="revisions", target="CLAS ZCL_TEST", params={"include": "source"})
+
+Fetch a specific version's source (version_uri comes from revisions output):
+  SAP(action="revision_source", params={"version_uri": "/sap/bc/adt/.../versions/.../content"})
+
+Compare two versions (omit version2_uri to diff against current active version):
+  SAP(action="compare_versions", target="CLAS ZCL_TEST", params={"version1_uri": "..."})
+  SAP(action="compare_versions", target="CLAS ZCL_TEST", params={"version1_uri": "...", "version2_uri": "..."})
+
+Notes:
+  - "revision_source" needs no target — only the version_uri identifies the version
+  - For FUNC, pass the function group via params.parent
+  - Version numbers are 5-digit zero-padded strings (e.g. "00033"); versno "00000" is the active version`)
+
 	case "system":
 		return mcp.NewToolResultText(`SAP(action="system") - System operations
 
@@ -328,6 +348,11 @@ File operations:
 2. Run report:                   SAP(action="debug", target="RUN_REPORT", params={"report": "ZREPORT"})
 3. Call RFC:                     SAP(action="debug", target="CALL_RFC", params={"function": "Z_MY_FM", "params": "{...}"})
 
+=== VERSION HISTORY ===
+1. List versions:                SAP(action="revisions", target="CLAS ZCL_TEST")
+2. Fetch old source:             SAP(action="revision_source", params={"version_uri": "..."})
+3. Diff against current:         SAP(action="compare_versions", target="CLAS ZCL_TEST", params={"version1_uri": "..."})
+
 === TIPS ===
 • Use "read" before "edit" — it gives context (deps, structure)
 • Use deploy_from_file for classes with many methods — edit locally, deploy per-file
@@ -349,6 +374,7 @@ Actions:
   grep     - Search patterns in source code
   test     - Run unit tests, ATC checks
   analyze  - Syntax check, call graph, code intelligence, profiler, dumps, boundary analysis
+  revisions - List version history, fetch old versions, compare diffs
   debug    - Breakpoints, stepping, variables, RFC calls, report execution
   system   - System info, transports, git, install tools, file operations
   help     - This help. Use SAP(action="help", target="<action>") for details.
@@ -392,7 +418,7 @@ func getUnhandledErrorMessage(action, objectType, objectName string) string {
 		sb.WriteString("Supported debug targets: SET_BREAKPOINT, GET_BREAKPOINTS, DELETE_BREAKPOINT, LISTEN, ATTACH, DETACH, STEP, GET_STACK, GET_VARIABLES, CALL_RFC, MOVE, RUN_REPORT, GET_VARIANTS, GET_TEXT_ELEMENTS, SET_TEXT_ELEMENTS, AMDP_*\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"debug\") for examples.")
 	default:
-		sb.WriteString("Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, help\n")
+		sb.WriteString("Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, revisions, revision_source, compare_versions, help\n")
 		sb.WriteString("Use SAP(action=\"help\") for full documentation.")
 	}
 

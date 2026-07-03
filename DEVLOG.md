@@ -35,6 +35,36 @@ git -C D:/GitHub/vibing-steampunk log --oneline -10
 
 ## 使用与修改历史
 
+### 2026-07-02 · 把 revisions / revision_source / compare_versions 接入 hyperfocused 路由 + 补 help
+
+**动机**：上次（同日稍早，commit `b0579df`）只在 DEVLOG 声明"revisions 功能验证通过"，但实际验证走的是 `query` SQL 查 `VRSD` + `debug CALL_RFC` 调 `SVRS_GET_REPS_FROM_OBJECT` 的迂回路径，并没有真正调用 `revisions` / `revision_source` / `compare_versions` 三个 action。深挖后发现根本原因：**这三个 action 在 hyperfocused 模式（即 `SAP(action=...)` 统一入口）下根本没注册到路由表**，只能在分散的独立 tool 里用。本次把路由接进来，让统一入口能直接调到。
+
+**做了什么**：
+1. `internal/mcp/handlers_revisions.go`：新增 `routeRevisionsAction`，把三个 action 路由到既有的 `handleGetRevisions` / `handleGetRevisionSource` / `handleCompareVersions`。
+   - `revisions` 需要 `target`（`TYPE NAME`），可选 `include`、`parent`（FUNC 必传函数组）。
+   - `revision_source` 不需要 target，靠 `params.version_uri`（来自上一步 revisions 输出）。
+   - `compare_versions` 需要 target + `version1_uri`；`version2_uri` 留空则 diff 当前活动版本。
+2. `internal/mcp/handlers_universal.go`：在 `routes` 切片里注册 `s.routeRevisionsAction`，置于 `routeSourceAction` 之后、`routeReadAction` 之前。
+3. `internal/mcp/handlers_help.go`：同步帮助文档（**接入时漏同步了，本次一并补上**）：
+   - 顶层 `default` 分支的 Actions 列表加一行 `revisions`。
+   - 新增 `case "revisions"` 详细帮助，含三段示例和注意事项（FUNC 要传 parent、versno 5 位零填充、`00000` 是活动版本）。
+   - `tips` 工作流加 `=== VERSION HISTORY ===` 三步示例。
+   - `getUnhandledErrorMessage` 的兜底 `Valid actions` 列表加入三个新 action。
+
+**关联 commit**：本次 commit（见 `git log` 顶部，message: `feat(mcp): route revisions/revision_source/compare_versions in hyperfocused mode`）。
+
+**验证口径**：
+- ✅ `go build ./internal/mcp/` 编译通过。
+- ⚠️ **`revisions` / `revision_source` / `compare_versions` 三个 action 尚未用真实 SAP 调用实测**。本次会话的"读取函数历史版本 33"操作走的是 `query` + `CALL_RFC`，没有走新接入的路由。
+- **TODO**：下次会话用 `SAP(action="revisions", target="FUNC ZDEMO_FUNC", params={"parent": "ZDEMO_FGROUP"})` 实测一遍，确认路由命中、参数透传、URI 拼装都没问题，再回填本条目。
+
+**踩坑 / 注意事项**：
+- 接入新 action 时**必须同步 help.go 三处**：顶层 Actions 列表、`case "<action>"` 详细页、`getUnhandledErrorMessage` 的 Valid actions 列表。本次差点漏掉第三处。
+- help.go 里 action 的展示顺序约定：详细页按 `read, edit, create, delete, search, query, test, grep, debug, analyze, revisions, system, tips` 排，把 `revisions` 紧挨 `analyze`（都属于分析/查询类）。
+- `revision_source` 故意不要求 target —— version_uri 已经唯一指向某个版本，再要求 target 反而是冗余校验。这个设计写在 `routeRevisionsAction` 的注释里。
+
+---
+
 ### 2026-07-02 · 验证历史版本读取功能（使用，非源码改动）
 
 **动机**：需要读取一个 ABAP 函数模块（占位记为 `ZDEMO_FUNC`，函数组 `ZDEMO_FGROUP`）的历史版本 33 的源码，用于对比历史实现 / 排查回归。这是 vsp MCP 的实际使用场景，记录下来作为该功能可用的验证证据，并为日后调用提供模板。
