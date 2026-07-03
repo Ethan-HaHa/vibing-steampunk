@@ -146,4 +146,12 @@ git -C D:/GitHub/vibing-steampunk log --oneline -10
 
 > 用户提到"后续我可能会进行添加和修改某些方法"。具体清单等用户提出后再补。
 
-- _（暂无）_
+### 下次会话候选
+
+- **help tips 补"每个 action 必传参数"速查表**：当前 help 只给 happy-path 示例，不强调"哪个参数是路由命中必需的"。模型/人按示例照抄容易在变体场景下漏掉必需参数（典型：`search` 把查询字符串放进 params、`grep` 不传 `package_name`/`object_url`、`query` 用错 type 前缀）。建议在 `case "search"/"grep"/"query"` 各自详细页顶部加一行 `Required: ...`。
+  - 触发场景：2026-07-03 实测 revisions 后顺带核实 search/grep/query 是否需要同样修路由，结果发现路由全好的，是参数传错。详见本次会话。
+- **`getUnhandledErrorMessage` 文案改进**：当前所有"路由匹配但参数不全"和"路由完全没匹配"都返回同一个 `No handler found for action="X"`，误导性很强（容易让人以为路由有 bug）。
+  - 现状：`routeXxxAction` 在校验失败时返回 `(nil, false, nil)`，外层 `handleUniversalTool` 循环结束无人 match 就走兜底，区分不出"路过但没接"和"接了但参数缺"。
+  - 方案 A（轻）：让 route 在已经识别到本 action 但参数不全时，返回一个"已识别但缺参"的 sentinel error，外层优先返回它，只有真没人接才用通用兜底。
+  - 方案 B（更轻）：在兜底 message 里直接列"该 action 的必需参数组合"，引导用户自己补全。
+  - 预计改动 5~30 行（视方案），低风险。
