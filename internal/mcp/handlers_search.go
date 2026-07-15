@@ -24,7 +24,10 @@ func (s *Server) routeSearchAction(ctx context.Context, action, objectType, obje
 		query = getStringParam(params, "query")
 	}
 	if query == "" {
-		return nil, false, nil
+		return nil, false, &missingParamError{
+			action: "search",
+			hint:   `needs a query string in target (e.g. "ZCL_*") or params.query`,
+		}
 	}
 	args := map[string]any{"query": query}
 	if v, ok := getFloatParam(params, "maxResults"); ok {

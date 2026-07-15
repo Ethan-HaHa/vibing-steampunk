@@ -50,6 +50,12 @@ Query data:
 	case "edit":
 		return mcp.NewToolResultText(`SAP(action="edit") - Edit source code
 
+Required per branch:
+  - High-level:    target="TYPE NAME" + params.source
+  - Surgical:      target="EDITSOURCE" + params.object_url + old_string + new_string
+  - UPDATE_SOURCE: params.object_url + source + lock_handle
+  - ACTIVATE:      params.object_url + object_name
+
 High-level edit (recommended - auto lock/unlock/activate):
   SAP(action="edit", target="CLAS ZCL_TEST", params={"source": "CLASS zcl_test..."})
   SAP(action="edit", target="PROG ZREPORT", params={"source": "REPORT zreport..."})
@@ -78,6 +84,12 @@ Service binding:
 	case "create":
 		return mcp.NewToolResultText(`SAP(action="create") - Create new objects
 
+Required per branch:
+  - OBJECT: params.object_type + name + description + package_name
+  - DEVC:   params.name + description (+ transport if package is not $TMP)
+  - TABL:   params.name + description + fields
+  - CLONE:  params.object_type + source_name + target_name + package
+
 Create object:
   SAP(action="create", target="OBJECT", params={"object_type": "CLAS/OC", "name": "ZCL_NEW", "description": "New class", "package_name": "$TMP"})
   SAP(action="create", target="DEVC", params={"name": "$ZNEW", "description": "New package"})
@@ -99,11 +111,17 @@ High-level create (with source):
 	case "search":
 		return mcp.NewToolResultText(`SAP(action="search") - Search for objects
 
+Required: query in target (e.g. "ZCL_*"), or params.query.
+
   SAP(action="search", target="ZCL_*")
   SAP(action="search", target="ZCL_*", params={"maxResults": 50})`)
 
 	case "query":
 		return mcp.NewToolResultText(`SAP(action="query") - Database queries
+
+Required: one of two forms:
+  - Table contents: target="TABL_CONTENTS <table>" (table name required)
+  - Free SQL:       target="SQL" (or omit target) + params.sql_query
 
 Table contents:
   SAP(action="query", target="TABL_CONTENTS ZTABLE", params={"max_rows": 50})
@@ -123,6 +141,11 @@ ATC check:
 
 	case "grep":
 		return mcp.NewToolResultText(`SAP(action="grep") - Search in source code
+
+Required: params.pattern + exactly one scope:
+  params.object_url (single) | params.object_urls (many) |
+  params.package_name (single) | params.packages (many).
+  (object_name is not supported; use object_url.)
 
 Grep single object:
   SAP(action="grep", params={"object_url": "/sap/bc/adt/oo/classes/zcl_test", "pattern": "SELECT.*FROM"})
@@ -341,7 +364,7 @@ File operations:
 === SEARCH & GREP ===
 1. Find objects:                 SAP(action="search", target="ZCL_*")
 2. Grep in package:              SAP(action="grep", params={"package_name": "$TMP", "pattern": "SELECT"})
-3. Grep specific object:         SAP(action="grep", params={"object_name": "ZCL_TEST", "pattern": "MODIFY"})
+3. Grep specific object:         SAP(action="grep", params={"object_url": "/sap/bc/adt/oo/classes/zcl_test", "pattern": "MODIFY"})
 
 === DEBUGGING ===
 1. Set breakpoint:               SAP(action="debug", target="SET_BREAKPOINT", params={"program": "ZCL_TEST", "line": 10})
@@ -393,7 +416,9 @@ Use SAP(action="help", target="tips") for best practices and workflow guides.`)
 }
 
 // getUnhandledErrorMessage returns a helpful error message when no route matched.
-func getUnhandledErrorMessage(action, objectType, objectName string) string {
+// params is passed so the message can point at the specific missing parameter
+// for shared actions (query/test/delete) that fall through to this fallback.
+func getUnhandledErrorMessage(action, objectType, objectName string, params map[string]any) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "No handler found for action=%q", action)
 	if objectType != "" {
@@ -414,6 +439,22 @@ func getUnhandledErrorMessage(action, objectType, objectName string) string {
 	case "create":
 		sb.WriteString("Supported create targets: OBJECT, DEVC, TABL, CLONE, PROGRAM, CLASS_WITH_TESTS, CLAS_TEST_INCLUDE\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"create\") for examples.")
+	case "query":
+		sqlQuery := getStringParam(params, "sql_query")
+		if (objectType == "SQL" || objectType == "") && sqlQuery == "" {
+			sb.WriteString("For free SQL, pass params.sql_query (target=\"SQL\" or omit target). Example: SAP(action=\"query\", target=\"SQL\", params={\"sql_query\": \"SELECT * FROM T000\"}).\n")
+		} else if objectType == "TABL_CONTENTS" && objectName == "" {
+			sb.WriteString("For table contents, pass the table name in target. Example: SAP(action=\"query\", target=\"TABL_CONTENTS ZTABLE\").\n")
+		} else {
+			sb.WriteString("query has two forms: target=\"TABL_CONTENTS <table>\" or target=\"SQL\" + params.sql_query.\n")
+		}
+		sb.WriteString("Use SAP(action=\"help\", target=\"query\") for examples.")
+	case "test":
+		sb.WriteString("test is driven by params, not target. Required: params.object_url (e.g. \"/sap/bc/adt/oo/classes/zcl_test\"); set params.type=\"atc\" for an ATC check.\n")
+		sb.WriteString("Use SAP(action=\"help\", target=\"test\") for examples.")
+	case "delete":
+		sb.WriteString("delete requires params.object_url and params.lock_handle. Get the lock first with SAP(action=\"edit\", target=\"LOCK\", params={\"object_url\": \"...\"}).\n")
+		sb.WriteString("Use SAP(action=\"help\", target=\"delete\") for examples.")
 	case "debug":
 		sb.WriteString("Supported debug targets: SET_BREAKPOINT, GET_BREAKPOINTS, DELETE_BREAKPOINT, LISTEN, ATTACH, DETACH, STEP, GET_STACK, GET_VARIABLES, CALL_RFC, MOVE, RUN_REPORT, GET_VARIANTS, GET_TEXT_ELEMENTS, SET_TEXT_ELEMENTS, AMDP_*\n")
 		sb.WriteString("Use SAP(action=\"help\", target=\"debug\") for examples.")

@@ -112,6 +112,31 @@ git -C D:/GitHub/vibing-steampunk log --oneline -10
 
 ---
 
+### 2026-07-15 · help 必传参数速查 + 缺参 sentinel 错误引导
+
+**动机**：commit `b9c0ce0` queue 的两个候选 TODO 合并落地。痛点是「参数缺失引导」缺失，分两面：(1) help 详细页只给 happy-path 示例，不标「哪个参数是路由命中必需的」，模型/人照抄示例在变体场景容易漏参；(2) route「识别到 action 但必需参数缺失」时几乎都返回 `(nil, false, nil)` 沉默 fall-through，最后统一吐 `No handler found for action="X"`，把「缺参」和「未知 action」混为一谈，误导（让人以为路由有 bug）。
+
+**做了什么**：
+1. **sentinel error（方案 A 核心）**：`handlers_universal.go` 新增 `missingParamError` 类型（`action` + `hint`），外层 `handleUniversalTool` 循环用 `errors.As` 捕获**首个** sentinel；循环结束若无 route handled 且有 sentinel，返回其提示，否则才用 `getUnhandledErrorMessage`。`handled==true` 路径行为完全不变。
+   - `routeGrepAction`（`handlers_grep.go`）：4 个范围参数全缺时返回 sentinel（之前沉默）。
+   - `routeSearchAction`（`handlers_search.go`）：query 为空时返回 sentinel。
+2. **`getUnhandledErrorMessage` 加 case（兜底覆盖共享 action）**：签名加 `params` 参数（调用点 `handlers_universal.go:113` 已有 params 在作用域）。新增 `query` / `test` / `delete` case，列必需参数（query 还会按是否漏 `sql_query` 给针对性提示）。
+3. **help 详细页加 `Required:` 行**：`handlers_help.go` 的 `search`/`query`/`grep`/`edit`/`create` 顶部加必传参数说明（复用 `revisions` 的 Notes 风格）。
+4. **顺带修 help 真实 bug**：`handlers_help.go` tips 页 grep 示例 `params={"object_name": ...}` → `routeGrepAction` 无 `object_name` 分支，照抄会 fall-through；改为 `object_url`。
+5. **单测**：新增 `internal/mcp/handlers_universal_test.go`，表驱动覆盖 grep/search 缺参→sentinel、query 缺 sql_query→兜底 hint、未知 action→通用兜底（均不触发 SAP 调用）。
+
+**关键约束（设计决策）**：sentinel 只用在**独占-action route**（grep/search；revisions 本就是好范式未动）。read/edit/analyze/system/query 这类**扇出到多 route 的共享 action 不能在 route 层加 sentinel**——否则 `read FOO` 会在 `routeReadAction` 误报缺参，而 FOO 可能归别的 route。共享 action 的缺参由 `getUnhandledErrorMessage` 兜底覆盖。
+
+**关联 commit**：本次 commit（见 `git log` 顶部）。
+
+**踩坑/注意事项**：
+- **Windows CRLF 会让 `gofmt -l` 误报全文件需格式化**：本仓库 `core.autocrlf=true`（存 LF、checkout CRLF），`gofmt -l` 在 Windows 会对**所有** .go 文件（含未改动的）都列出。诊断法：`git ls-files --eol <file>` 看到 `i/lf w/crlf`，且 `gofmt -l` 连未改文件也列出 = CRLF 噪音，不是真格式问题。**不要 `gofmt -w`**（会把 working tree 转 LF，与 autocrlf 冲突）。CI 在 Linux(LF) 跑 gofumpt 无此问题。本次实际改动 surgical：`git diff --stat` 仅 89 insertions / 6 deletions。
+
+**遗留 TODO**：
+- read/edit 高级分支 `source` 缺失仍 fall-through（共享 action，本次未动 route；help Required 行已提示）。如需更精准，可设计"最后一个 route 仍没接住才报缺参"的机制，复杂度高，暂不做。
+
+---
+
 ## 修改模板（复制即用）
 
 ```
@@ -148,9 +173,11 @@ git -C D:/GitHub/vibing-steampunk log --oneline -10
 
 ### 下次会话候选
 
-- **help tips 补"每个 action 必传参数"速查表**：当前 help 只给 happy-path 示例，不强调"哪个参数是路由命中必需的"。模型/人按示例照抄容易在变体场景下漏掉必需参数（典型：`search` 把查询字符串放进 params、`grep` 不传 `package_name`/`object_url`、`query` 用错 type 前缀）。建议在 `case "search"/"grep"/"query"` 各自详细页顶部加一行 `Required: ...`。
+> **2026-07-15 更新**：下方两项（help 速查表 + `getUnhandledErrorMessage` 文案）已于本次会话完成——采用「方案 A sentinel（grep/search 等独占 action）+ 兜底 case（query/test/delete 等共享 action）」结合，并补了 help `Required:` 行 + 顺带修了 help 里 `object_name` 的 bug。详见上方 `2026-07-15` 历史条目。原文保留备查。
+
+~~- **help tips 补"每个 action 必传参数"速查表**~~ ✅ 已完成（2026-07-15）：search/query/grep/edit/create 详细页加 `Required:` 行；并修 tips 页 `object_name`→`object_url` bug。
   - 触发场景：2026-07-03 实测 revisions 后顺带核实 search/grep/query 是否需要同样修路由，结果发现路由全好的，是参数传错。详见本次会话。
-- **`getUnhandledErrorMessage` 文案改进**：当前所有"路由匹配但参数不全"和"路由完全没匹配"都返回同一个 `No handler found for action="X"`，误导性很强（容易让人以为路由有 bug）。
+~~- **`getUnhandledErrorMessage` 文案改进**~~ ✅ 已完成（2026-07-15）：方案 A + B 结合——独占 action（grep/search）用 `missingParamError` sentinel；共享 action（query/test/delete）在 `getUnhandledErrorMessage` 加 case。
   - 现状：`routeXxxAction` 在校验失败时返回 `(nil, false, nil)`，外层 `handleUniversalTool` 循环结束无人 match 就走兜底，区分不出"路过但没接"和"接了但参数缺"。
   - 方案 A（轻）：让 route 在已经识别到本 action 但参数不全时，返回一个"已识别但缺参"的 sentinel error，外层优先返回它，只有真没人接才用通用兜底。
   - 方案 B（更轻）：在兜底 message 里直接列"该 action 的必需参数组合"，引导用户自己补全。

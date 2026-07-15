@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -99,6 +100,13 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 		s.routeServiceBindingAction,
 	}
 
+	// A route may recognize its action but find a required parameter missing.
+	// It signals this by returning a *missingParamError (with handled=false so
+	// other routes still get a chance to run). Remember the first such signal;
+	// if no route ultimately handles the action, surface it instead of the
+	// generic "No handler found" — that way the caller can tell a missing
+	// parameter apart from a typo'd or unknown action.
+	var missingParam *missingParamError
 	for _, route := range routes {
 		result, handled, err := route(ctx, action, objectType, objectName, params)
 		if handled {
@@ -107,10 +115,20 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 			}
 			return result, nil
 		}
+		if missingParam == nil && err != nil {
+			var mpe *missingParamError
+			if errors.As(err, &mpe) {
+				missingParam = mpe
+			}
+		}
 	}
 
-	// Nothing matched
-	return newToolResultError(getUnhandledErrorMessage(action, objectType, objectName)), nil
+	// Nothing matched. Prefer a "missing required parameter" hint (if some route
+	// recognized the action) over the generic unhandled message.
+	if missingParam != nil {
+		return newToolResultError(missingParam.Error()), nil
+	}
+	return newToolResultError(getUnhandledErrorMessage(action, objectType, objectName, params)), nil
 }
 
 // parseTarget splits "TYPE NAME" into objectType and objectName, uppercasing both.
@@ -179,6 +197,23 @@ func newRequest(args map[string]any) mcp.CallToolRequest {
 // wrapErr wraps an error into a tool result.
 func wrapErr(op string, err error) *mcp.CallToolResult {
 	return newToolResultError(fmt.Sprintf("%s failed: %v", op, err))
+}
+
+// missingParamError signals that a route recognized its action but a required
+// parameter was missing. handleUniversalTool surfaces the first one it sees
+// (only when no route handles the action) instead of the generic unhandled
+// message, so callers can distinguish "missing param" from "unknown action".
+//
+// Use this only in routes that own a unique action (e.g. grep, search) — not in
+// routes reached via shared actions (read/edit/analyze/system), where falling
+// through to another route must stay possible.
+type missingParamError struct {
+	action string
+	hint   string
+}
+
+func (e *missingParamError) Error() string {
+	return fmt.Sprintf("action %q is missing a required parameter: %s", e.action, e.hint)
 }
 
 // newToolResultJSON marshals a value to JSON and returns it as a tool result.

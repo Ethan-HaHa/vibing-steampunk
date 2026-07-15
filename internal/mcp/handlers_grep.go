@@ -37,7 +37,11 @@ func (s *Server) routeGrepAction(ctx context.Context, action, objectType, object
 		return s.callHandler(ctx, s.handleGrepObject, params)
 	}
 
-	return nil, false, nil
+	// action is "grep" but no search scope was provided.
+	return nil, false, &missingParamError{
+		action: "grep",
+		hint:   "needs one of params.package_name / object_url / object_urls / packages (search scope), plus params.pattern",
+	}
 }
 
 // --- Grep/Search Handlers ---
