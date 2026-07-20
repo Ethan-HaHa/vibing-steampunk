@@ -177,7 +177,9 @@ func (s *Server) handleGetTextPoolInLanguage(ctx context.Context, request mcp.Ca
 		return newToolResultError("language is required"), nil
 	}
 
-	entries, err := s.adtClient.GetTextPoolInLanguage(ctx, programName, lang)
+	category, _ := request.GetArguments()["category"].(string)
+
+	entries, err := s.adtClient.GetTextPoolInLanguage(ctx, programName, category, lang)
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("GetTextPoolInLanguage failed: %v", err)), nil
 	}
@@ -187,6 +189,48 @@ func (s *Server) handleGetTextPoolInLanguage(ctx context.Context, request mcp.Ca
 	}
 
 	jsonBytes, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return newToolResultError(fmt.Sprintf("Failed to format result: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+func (s *Server) handleWriteTextPool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	programName, ok := request.GetArguments()["program_name"].(string)
+	if !ok || programName == "" {
+		return newToolResultError("program_name is required"), nil
+	}
+
+	category, ok := request.GetArguments()["category"].(string)
+	if !ok || category == "" {
+		return newToolResultError("category is required (symbols, selections, or headings)"), nil
+	}
+
+	entriesRaw, ok := request.GetArguments()["entries"]
+	if !ok || entriesRaw == nil {
+		return newToolResultError("entries is required"), nil
+	}
+
+	entriesJSON, err := json.Marshal(entriesRaw)
+	if err != nil {
+		return newToolResultError(fmt.Sprintf("Failed to parse entries: %v", err)), nil
+	}
+
+	var entries []adt.TextElement
+	if err := json.Unmarshal(entriesJSON, &entries); err != nil {
+		return newToolResultError(fmt.Sprintf("Failed to parse entries: %v", err)), nil
+	}
+
+	lang, _ := request.GetArguments()["language"].(string)
+	transport, _ := request.GetArguments()["transport"].(string)
+
+	result, err := s.adtClient.WriteTextPool(ctx, programName, category, entries, lang, transport)
+	if err != nil {
+		return newToolResultError(fmt.Sprintf("WriteTextPool failed: %v", err)), nil
+	}
+
+	jsonBytes, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return newToolResultError(fmt.Sprintf("Failed to format result: %v", err)), nil
 	}
@@ -221,4 +265,30 @@ func (s *Server) handleCompareObjectLanguages(ctx context.Context, request mcp.C
 	}
 
 	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// routeI18nAction exposes the translation/text-pool handlers through the universal
+// SAP tool. In hyperfocused mode only the single SAP tool is registered, and its
+// action route table otherwise has no i18n entry, so these operations would be
+// unreachable. Action names are the tool names lowercased.
+func (s *Server) routeI18nAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
+	switch action {
+	case "getobjecttexts":
+		return s.callHandler(ctx, s.handleGetObjectTextsInLanguage, params)
+	case "getdataelementlabels":
+		return s.callHandler(ctx, s.handleGetDataElementLabels, params)
+	case "getmessageclasstexts":
+		return s.callHandler(ctx, s.handleGetMessageClassTexts, params)
+	case "writemessageclasstexts":
+		return s.callHandler(ctx, s.handleWriteMessageClassTexts, params)
+	case "writedataelementlabels":
+		return s.callHandler(ctx, s.handleWriteDataElementLabels, params)
+	case "gettextpool":
+		return s.callHandler(ctx, s.handleGetTextPoolInLanguage, params)
+	case "writetextpool":
+		return s.callHandler(ctx, s.handleWriteTextPool, params)
+	case "comparelanguages":
+		return s.callHandler(ctx, s.handleCompareObjectLanguages, params)
+	}
+	return nil, false, nil
 }

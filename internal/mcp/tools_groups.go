@@ -56,7 +56,7 @@ func toolGroups() map[string][]string {
 		"N": { // i18n/Translation tools
 			"GetObjectTextsInLanguage", "GetDataElementLabels", "GetMessageClassTexts",
 			"WriteMessageClassTexts", "WriteDataElementLabels",
-			"GetTextPool", "CompareLanguages",
+			"GetTextPool", "WriteTextPool", "CompareLanguages",
 		},
 	}
 	// Map "U" to same tools as "5"

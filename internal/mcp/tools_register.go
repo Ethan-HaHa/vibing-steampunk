@@ -2398,6 +2398,26 @@ func (s *Server) registerI18NTools(shouldRegister func(string) bool) {
 		), s.handleGetTextPoolInLanguage)
 	}
 
+	if shouldRegister("WriteTextPool") {
+		s.mcpServer.AddTool(mcp.NewTool("WriteTextPool",
+			mcp.WithDescription("Write a program's text elements for a category as one step (lock -> write -> unlock -> activate). Use this instead of hardcoded literals so texts are translatable. Categories: symbols (text-xxx, 3-char id, optional max_length), selections (selection-screen field texts, max 30, optional ddic_reference), headings (LISTHEADER / COLUMNHEADER_1..4). entries is a JSON array of {id, text, max_length?, ddic_reference?}."),
+			mcp.WithString("program_name",
+				mcp.Required(),
+				mcp.Description("Program name (e.g., ZTEST)"),
+			),
+			mcp.WithString("category",
+				mcp.Required(),
+				mcp.Description("Text element category: symbols, selections, or headings"),
+			),
+			mcp.WithString("language",
+				mcp.Description("ISO language code (e.g., EN, ZH). Defaults to the login language if omitted."),
+			),
+			mcp.WithString("transport",
+				mcp.Description("Transport request number (optional for $TMP objects)"),
+			),
+		), s.handleWriteTextPool)
+	}
+
 	if shouldRegister("CompareLanguages") {
 		s.mcpServer.AddTool(mcp.NewTool("CompareLanguages",
 			mcp.WithDescription("Compare the text content of an ABAP object in two languages. Shows which lines differ or are missing in the target language. Useful for identifying untranslated or outdated translations."),

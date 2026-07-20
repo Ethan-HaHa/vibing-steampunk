@@ -99,15 +99,11 @@ func TestGetMessageClassTexts(t *testing.T) {
 }
 
 func TestGetTextPoolInLanguage(t *testing.T) {
-	xmlResp := `<?xml version="1.0" encoding="UTF-8"?>
-<textPool>
-  <entry id="I" key="001" entry="Texte un"/>
-  <entry id="I" key="002" entry="Texte deux"/>
-</textPool>`
+	body := "001=Texte un\n\n002=Texte deux\n"
 
 	mock := &mockTransportClient{
 		responses: map[string]*http.Response{
-			"/sap/bc/adt/programs/programs/ZTEST/textelements": newTestResponse(xmlResp),
+			"/sap/bc/adt/textelements/programs/ZTEST/source/symbols": newTestResponse(body),
 			"discovery": newTestResponse("OK"),
 		},
 	}
@@ -116,7 +112,7 @@ func TestGetTextPoolInLanguage(t *testing.T) {
 	transport := NewTransportWithClient(cfg, mock)
 	client := NewClientWithTransport(cfg, transport)
 
-	entries, err := client.GetTextPoolInLanguage(context.Background(), "ZTEST", "FR")
+	entries, err := client.GetTextPoolInLanguage(context.Background(), "ZTEST", "symbols", "FR")
 	if err != nil {
 		t.Fatalf("GetTextPoolInLanguage failed: %v", err)
 	}
@@ -125,11 +121,14 @@ func TestGetTextPoolInLanguage(t *testing.T) {
 		t.Fatalf("Expected 2 entries, got %d", len(entries))
 	}
 
-	if entries[0].Key != "001" {
-		t.Errorf("Key = %v, want 001", entries[0].Key)
+	if entries[0].ID != "001" {
+		t.Errorf("ID = %v, want 001", entries[0].ID)
 	}
 	if entries[0].Text != "Texte un" {
 		t.Errorf("Text = %v, want 'Texte un'", entries[0].Text)
+	}
+	if entries[0].Category != "symbols" {
+		t.Errorf("Category = %v, want symbols", entries[0].Category)
 	}
 }
 

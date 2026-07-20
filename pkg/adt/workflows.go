@@ -3,6 +3,7 @@ package adt
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -193,6 +194,204 @@ func (c *Client) WriteClass(ctx context.Context, className string, source string
 	if activation.Success {
 		result.Success = true
 		result.Message = "Class updated and activated successfully"
+	} else {
+		result.Message = "Activation failed - check activation messages"
+	}
+
+	return result, nil
+}
+
+// --- Text Pool (Text Elements) Workflow ---
+
+// TextElement represents a single text element (text symbol / selection text /
+// list heading) to write into a program's text pool. Mirrors abap-adt-api's
+// TextElement (D:\GitHub\abap-adt-api\src\api\textelements.ts).
+type TextElement struct {
+	ID            string `json:"id"`
+	Text          string `json:"text"`
+	MaxLength     int    `json:"max_length,omitempty"`
+	DDicReference string `json:"ddic_reference,omitempty"`
+	Category      string `json:"category,omitempty"`
+}
+
+// WriteTextPoolResult represents the result of writing a program's text pool.
+type WriteTextPoolResult struct {
+	Success     bool              `json:"success"`
+	ProgramName string            `json:"programName"`
+	Category    string            `json:"category"`
+	ObjectURL   string            `json:"objectUrl"`
+	Activation  *ActivationResult `json:"activation,omitempty"`
+	Message     string            `json:"message,omitempty"`
+}
+
+// validTextElementCategories is the set of ADT text element categories.
+var validTextElementCategories = map[string]bool{
+	"symbols":    true,
+	"selections": true,
+	"headings":   true,
+}
+
+// validHeadingKeys is the set of allowed IDs for the "headings" category.
+var validHeadingKeys = map[string]bool{
+	"LISTHEADER":     true,
+	"COLUMNHEADER_1": true,
+	"COLUMNHEADER_2": true,
+	"COLUMNHEADER_3": true,
+	"COLUMNHEADER_4": true,
+}
+
+// formatTextElements validates a set of text elements for a category and renders
+// the plain-text body (`ID=text` per line) expected by the ADT textelements PUT.
+// Mirrors abap-adt-api's formatTextElements / validateTextElements.
+func formatTextElements(entries []TextElement, category string) (string, error) {
+	if !validTextElementCategories[category] {
+		return "", fmt.Errorf("invalid text element category %q: want one of symbols, selections, headings", category)
+	}
+	var lines []string
+	for _, el := range entries {
+		id := strings.ToUpper(strings.TrimSpace(el.ID))
+		switch category {
+		case "symbols":
+			if len(id) != 3 {
+				return "", fmt.Errorf("symbol key %q must be exactly 3 characters", el.ID)
+			}
+			if strings.ContainsAny(id, " \t\r\n") {
+				return "", fmt.Errorf("symbol key %q must not contain blanks", el.ID)
+			}
+			// SAP rejects text symbols without an explicit @MaxLength with HTTP
+			// 406 "Text elements contain errors; correct all inconsistencies"
+			// (verified empirically — a single symbol without @MaxLength fails
+			// even when the rest of the pool is valid). Default to the text
+			// length in characters when the caller omits max_length, mirroring
+			// SE38's text element editor which derives the length from the text
+			// on save.
+			textLen := len([]rune(el.Text))
+			maxLen := el.MaxLength
+			if maxLen <= 0 {
+				maxLen = textLen
+			}
+			if textLen > maxLen {
+				return "", fmt.Errorf("symbol %q text length %d exceeds maxLength %d", el.ID, textLen, maxLen)
+			}
+			lines = append(lines, fmt.Sprintf("@MaxLength:%d", maxLen))
+		case "selections":
+			if len(el.Text) > 30 {
+				return "", fmt.Errorf("selection %q text length %d exceeds maximum of 30", el.ID, len(el.Text))
+			}
+			if el.DDicReference != "" {
+				lines = append(lines, fmt.Sprintf("@DDICReference:%s", el.DDicReference))
+			}
+		case "headings":
+			if !validHeadingKeys[id] {
+				return "", fmt.Errorf("invalid heading key %q: allowed LISTHEADER, COLUMNHEADER_1..4", el.ID)
+			}
+			limit := 255
+			if id == "LISTHEADER" {
+				limit = 71
+			}
+			if len(el.Text) > limit {
+				return "", fmt.Errorf("heading %q text length %d exceeds maximum of %d", el.ID, len(el.Text), limit)
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s=%s", id, el.Text))
+		if category != "headings" {
+			lines = append(lines, "")
+		}
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// WriteTextPool writes a program's text elements (text symbols / selection texts /
+// list headings) for a category as a single workflow: Lock -> PUT -> Unlock ->
+// Activate. The PUT uses the standard ADT textelements endpoint with a plain-text
+// body and media type application/vnd.sap.adt.textelements.<category>.v1
+// (protocol mirrors abap-adt-api setTextElements). The PUT is stateful so it stays
+// within the lock session (issue #88).
+func (c *Client) WriteTextPool(ctx context.Context, programName, category string, entries []TextElement, lang, transport string) (*WriteTextPoolResult, error) {
+	programName = strings.ToUpper(programName)
+	category = strings.ToLower(strings.TrimSpace(category))
+	if lang != "" {
+		lang = strings.ToUpper(lang)
+	}
+
+	lockURL := fmt.Sprintf("/sap/bc/adt/textelements/programs/%s/source/%s", url.PathEscape(programName), category)
+	programURL := fmt.Sprintf("/sap/bc/adt/programs/programs/%s", url.PathEscape(programName))
+
+	// Unified mutation policy gate (op type + package + transport)
+	if err := c.checkMutation(ctx, MutationContext{
+		Op:        OpWorkflow,
+		OpName:    "WriteTextPool",
+		ObjectURL: programURL,
+		Transport: transport,
+	}); err != nil {
+		return nil, err
+	}
+
+	result := &WriteTextPoolResult{
+		ProgramName: programName,
+		Category:    category,
+		ObjectURL:   lockURL,
+	}
+
+	// Render + validate the plain-text body up front (cheap, fail before locking)
+	body, err := formatTextElements(entries, category)
+	if err != nil {
+		result.Message = fmt.Sprintf("Invalid text elements: %v", err)
+		return result, nil
+	}
+
+	// Step 1: Lock the text elements resource
+	lock, err := c.LockObject(ctx, lockURL, "MODIFY")
+	if err != nil {
+		result.Message = fmt.Sprintf("Failed to lock text elements: %v", err)
+		return result, nil
+	}
+
+	defer func() {
+		if !result.Success {
+			c.UnlockObject(ctx, lockURL, lock.LockHandle)
+		}
+	}()
+
+	// Step 2: PUT the text elements (stateful — stay within the lock session, issue #88)
+	params := url.Values{}
+	params.Set("lockHandle", lock.LockHandle)
+	if transport != "" {
+		params.Set("corrNr", transport)
+	}
+	mediaType := fmt.Sprintf("application/vnd.sap.adt.textelements.%s.v1", category)
+	opts := &RequestOptions{
+		Method:      http.MethodPut,
+		Query:       params,
+		Body:        []byte(body),
+		ContentType: mediaType + "; charset=UTF-8",
+		Stateful:    true,
+	}
+	if lang != "" {
+		opts.OverrideLanguage = lang
+	}
+	if _, err := c.transport.Request(ctx, lockURL, opts); err != nil {
+		result.Message = fmt.Sprintf("Failed to write text elements: %v", err)
+		return result, nil
+	}
+
+	// Step 3: Unlock before activation (SAP requirement)
+	if err := c.UnlockObject(ctx, lockURL, lock.LockHandle); err != nil {
+		result.Message = fmt.Sprintf("Failed to unlock text elements: %v", err)
+		return result, nil
+	}
+
+	// Step 4: Activate the program so the new text elements take effect at runtime
+	activation, err := c.Activate(ctx, programURL, programName)
+	if err != nil {
+		result.Message = fmt.Sprintf("Failed to activate: %v", err)
+		result.Activation = activation
+		return result, nil
+	}
+	result.Activation = activation
+	if activation.Success {
+		result.Success = true
+		result.Message = fmt.Sprintf("Text pool (%s) written and program activated successfully", category)
 	} else {
 		result.Message = "Activation failed - check activation messages"
 	}

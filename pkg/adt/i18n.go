@@ -3,9 +3,11 @@ package adt
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -17,13 +19,6 @@ type DataElementLabels struct {
 	Medium  string `json:"medium" xml:"mediumDescription,attr"`
 	Long    string `json:"long" xml:"longDescription,attr"`
 	Heading string `json:"heading" xml:"heading,attr"`
-}
-
-// TextPoolEntry represents a single text pool entry (text element/symbol) of a program.
-type TextPoolEntry struct {
-	ID   string `json:"id" xml:"id,attr"`
-	Key  string `json:"key" xml:"key,attr"`
-	Text string `json:"text" xml:"entry,attr"`
 }
 
 // LanguageComparison holds the result of comparing an object's texts in two languages.
@@ -209,34 +204,100 @@ func (c *Client) WriteDataElementLabels(ctx context.Context, name, lang string, 
 	return nil
 }
 
-// GetTextPoolInLanguage retrieves the text pool (text elements/symbols) of a program in a specific language.
-func (c *Client) GetTextPoolInLanguage(ctx context.Context, programName, lang string) ([]TextPoolEntry, error) {
+// GetTextPoolInLanguage retrieves a program's text elements (text symbols /
+// selection texts / list headings) in a specific language. If category is empty
+// all three categories (symbols, selections, headings) are read and merged;
+// otherwise only the requested category is returned. Each entry carries its
+// Category. Mirrors abap-adt-api getTextElements (plain-text protocol: a GET to
+// /textelements/programs/<name>/source/<category> with Accept
+// application/vnd.sap.adt.textelements.<category>.v1 returns a plain-text body
+// of "ID=text" lines). A 404 for a category is treated as "no entries".
+func (c *Client) GetTextPoolInLanguage(ctx context.Context, programName, category, lang string) ([]TextElement, error) {
 	if err := c.checkSafety(OpRead, "GetTextPoolInLanguage"); err != nil {
 		return nil, err
 	}
 
 	programName = strings.ToUpper(programName)
 	lang = strings.ToUpper(lang)
+	category = strings.ToLower(strings.TrimSpace(category))
+	if category != "" && !validTextElementCategories[category] {
+		return nil, fmt.Errorf("invalid text element category %q: want one of symbols, selections, headings", category)
+	}
 
-	path := fmt.Sprintf("/sap/bc/adt/programs/programs/%s/textelements", url.PathEscape(programName))
+	cats := []string{category}
+	if category == "" {
+		cats = []string{"symbols", "selections", "headings"}
+	}
+
+	var all []TextElement
+	for _, cat := range cats {
+		entries, err := c.readTextElementsCategory(ctx, programName, cat, lang)
+		if err != nil {
+			return nil, err
+		}
+		for i := range entries {
+			entries[i].Category = cat
+		}
+		all = append(all, entries...)
+	}
+	return all, nil
+}
+
+// readTextElementsCategory fetches one text-element category for a program as the
+// plain-text body described above; a 404 yields an empty (nil) result.
+func (c *Client) readTextElementsCategory(ctx context.Context, programName, category, lang string) ([]TextElement, error) {
+	path := fmt.Sprintf("/sap/bc/adt/textelements/programs/%s/source/%s", url.PathEscape(programName), category)
 	resp, err := c.transport.Request(ctx, path, &RequestOptions{
 		Method:           http.MethodGet,
-		Accept:           "application/xml",
+		Accept:           fmt.Sprintf("application/vnd.sap.adt.textelements.%s.v1", category),
 		OverrideLanguage: lang,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get text pool: %w", err)
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.IsNotFound() {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get text pool (%s): %w", category, err)
 	}
+	return parseTextElements(string(resp.Body)), nil
+}
 
-	type textPool struct {
-		Entries []TextPoolEntry `xml:"entry"`
+// parseTextElements parses the plain-text body returned by the ADT textelements
+// endpoint: one "ID=text" entry per line, optionally preceded by "@MaxLength:N"
+// and/or "@DDICReference:ref" prefix lines that apply to the next entry. Mirrors
+// abap-adt-api parseTextElements.
+func parseTextElements(body string) []TextElement {
+	var elements []TextElement
+	var curMaxLength int
+	var curDdicRef string
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(line, "@MaxLength:"):
+			if n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "@MaxLength:"))); err == nil {
+				curMaxLength = n
+			}
+		case strings.HasPrefix(line, "@DDICReference:"):
+			curDdicRef = strings.TrimSpace(strings.TrimPrefix(line, "@DDICReference:"))
+		case strings.Contains(line, "="):
+			eq := strings.Index(line, "=")
+			id := strings.TrimSpace(line[:eq])
+			text := line[eq+1:]
+			if id != "" {
+				el := TextElement{ID: id, Text: text}
+				if curMaxLength > 0 {
+					el.MaxLength = curMaxLength
+				}
+				if curDdicRef != "" {
+					el.DDicReference = curDdicRef
+				}
+				elements = append(elements, el)
+			}
+			curMaxLength = 0
+			curDdicRef = ""
+		}
 	}
-	var tp textPool
-	if err := xml.Unmarshal(resp.Body, &tp); err != nil {
-		return nil, fmt.Errorf("parse text pool XML: %w", err)
-	}
-
-	return tp.Entries, nil
+	return elements
 }
 
 // CompareObjectLanguages compares the text content of an object in two languages.

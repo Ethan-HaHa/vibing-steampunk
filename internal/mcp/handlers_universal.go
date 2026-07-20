@@ -98,6 +98,7 @@ func (s *Server) handleUniversalTool(ctx context.Context, request mcp.CallToolRe
 		s.routeAnalysisAction,
 		s.routeContextAction,
 		s.routeServiceBindingAction,
+		s.routeI18nAction,
 	}
 
 	// A route may recognize its action but find a required parameter missing.

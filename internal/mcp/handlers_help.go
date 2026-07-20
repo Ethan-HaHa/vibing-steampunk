@@ -384,6 +384,31 @@ File operations:
 • Always test after edit: syntax check → unit tests → ATC
 • For large refactors: export → edit locally → deploy → test`)
 
+	case "i18n":
+		return mcp.NewToolResultText(`SAP i18n actions - Text pools, message classes, data element labels, language comparison
+
+Text pool (program text symbols / selection texts / list headings):
+  SAP(action="gettextpool", params={"program_name": "ZPROG", "language": "ZH"})
+    Omit category to read all three merged, or set category to "symbols" | "selections" | "headings".
+    Returns [{id, text, max_length?, ddic_reference?, category}].
+
+  SAP(action="writetextpool", params={"program_name": "ZPROG", "category": "symbols", "language": "ZH", "entries": [{"id":"001","text":"..."}]})
+    Workflow: lock -> PUT -> unlock -> activate.
+    - symbols:    id is a 3-char text symbol key (TEXT-001 etc.). max_length is optional
+                  and defaults to the text length in characters — SAP requires an
+                  @MaxLength on every symbol, otherwise PUT fails with HTTP 406
+                  "Text elements contain errors; correct all inconsistencies".
+    - selections: id is the PARAMETER name (e.g. P_MATNR); text <= 30 chars.
+    - headings:   id is LISTHEADER (<=71) or COLUMNHEADER_1..4 (<=255).
+
+Other i18n actions (pass object_name / object_type / language / payload via params):
+  getobjecttexts          - Read an object's translatable texts in a language
+  getdataelementlabels    - Read data element labels
+  getmessageclasstexts    - Read message class texts
+  writemessageclasstexts  - Write message class texts
+  writedataelementlabels  - Write data element labels
+  comparelanguages        - Compare an object across languages`)
+
 	default:
 		return mcp.NewToolResultText(`SAP - Universal ABAP Development Tool
 
@@ -400,6 +425,7 @@ Actions:
   revisions - List version history, fetch old versions, compare diffs
   debug    - Breakpoints, stepping, variables, RFC calls, report execution
   system   - System info, transports, git, install tools, file operations
+  i18n     - Text pools, message classes, data element labels (gettextpool/writetextpool/...)
   help     - This help. Use SAP(action="help", target="<action>") for details.
 
 Quick examples:
@@ -460,7 +486,8 @@ func getUnhandledErrorMessage(action, objectType, objectName string, params map[
 		sb.WriteString("Use SAP(action=\"help\", target=\"debug\") for examples.")
 	default:
 		sb.WriteString("Valid actions: read, edit, create, delete, search, query, grep, test, analyze, debug, system, revisions, revision_source, compare_versions, help\n")
-		sb.WriteString("Use SAP(action=\"help\") for full documentation.")
+		sb.WriteString("i18n actions: gettextpool, writetextpool, getobjecttexts, getdataelementlabels, getmessageclasstexts, writemessageclasstexts, writedataelementlabels, comparelanguages\n")
+		sb.WriteString("Use SAP(action=\"help\") for full documentation, or SAP(action=\"help\", target=\"i18n\") for i18n details.")
 	}
 
 	return sb.String()

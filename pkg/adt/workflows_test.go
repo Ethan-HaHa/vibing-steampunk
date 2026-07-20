@@ -552,3 +552,97 @@ func TestReplaceMatches_LineEndings(t *testing.T) {
 		t.Errorf("replaceMatches result = %q, want %q", result, expected)
 	}
 }
+
+// TestFormatTextElements covers the plain-text body that the ADT textelements PUT
+// sends (protocol mirrors abap-adt-api formatTextElements). formatTextElements's
+// output is the exact PUT body, so this is the authoritative body-format check;
+// the full lock->PUT->unlock->activate flow is verified by MCP end-to-end test.
+func TestFormatTextElements(t *testing.T) {
+	t.Run("symbols with maxlength", func(t *testing.T) {
+		body, err := formatTextElements([]TextElement{
+			{ID: "001", Text: "Material", MaxLength: 20},
+		}, "symbols")
+		if err != nil {
+			t.Fatalf("formatTextElements failed: %v", err)
+		}
+		want := "@MaxLength:20\n001=Material\n"
+		if body != want {
+			t.Errorf("symbols body = %q, want %q", body, want)
+		}
+	})
+
+	t.Run("symbols without maxlength default to text length", func(t *testing.T) {
+		// SAP rejects symbols lacking @MaxLength (HTTP 406 "Text elements
+		// contain errors; correct all inconsistencies"); formatTextElements
+		// must fill one in. Length is in characters (runes), not bytes —
+		// "物料" is 2, not 6.
+		body, err := formatTextElements([]TextElement{
+			{ID: "002", Text: "物料"},
+		}, "symbols")
+		if err != nil {
+			t.Fatalf("formatTextElements failed: %v", err)
+		}
+		want := "@MaxLength:2\n002=物料\n"
+		if body != want {
+			t.Errorf("symbols body = %q, want %q", body, want)
+		}
+	})
+
+	t.Run("selections with ddic reference", func(t *testing.T) {
+		body, err := formatTextElements([]TextElement{
+			{ID: "S01", Text: "Plant", DDicReference: "MARA-WERKS"},
+		}, "selections")
+		if err != nil {
+			t.Fatalf("formatTextElements failed: %v", err)
+		}
+		want := "@DDICReference:MARA-WERKS\nS01=Plant\n"
+		if body != want {
+			t.Errorf("selections body = %q, want %q", body, want)
+		}
+	})
+
+	t.Run("headings have no trailing blank line", func(t *testing.T) {
+		body, err := formatTextElements([]TextElement{
+			{ID: "LISTHEADER", Text: "Material Report"},
+			{ID: "COLUMNHEADER_1", Text: "Material"},
+		}, "headings")
+		if err != nil {
+			t.Fatalf("formatTextElements failed: %v", err)
+		}
+		want := "LISTHEADER=Material Report\nCOLUMNHEADER_1=Material"
+		if body != want {
+			t.Errorf("headings body = %q, want %q", body, want)
+		}
+	})
+
+	t.Run("symbol key must be 3 chars", func(t *testing.T) {
+		if _, err := formatTextElements([]TextElement{{ID: "1", Text: "x"}}, "symbols"); err == nil {
+			t.Error("expected error for 1-char symbol key")
+		}
+	})
+
+	t.Run("symbol text exceeds maxlength", func(t *testing.T) {
+		if _, err := formatTextElements([]TextElement{{ID: "001", Text: "too long", MaxLength: 3}}, "symbols"); err == nil {
+			t.Error("expected error for symbol text exceeding maxLength")
+		}
+	})
+
+	t.Run("invalid heading key", func(t *testing.T) {
+		if _, err := formatTextElements([]TextElement{{ID: "BOGUS", Text: "x"}}, "headings"); err == nil {
+			t.Error("expected error for invalid heading key")
+		}
+	})
+
+	t.Run("selection text too long", func(t *testing.T) {
+		long := strings.Repeat("x", 31)
+		if _, err := formatTextElements([]TextElement{{ID: "S01", Text: long}}, "selections"); err == nil {
+			t.Error("expected error for selection text > 30")
+		}
+	})
+
+	t.Run("invalid category", func(t *testing.T) {
+		if _, err := formatTextElements([]TextElement{{ID: "001", Text: "x"}}, "bogus"); err == nil {
+			t.Error("expected error for invalid category")
+		}
+	})
+}
