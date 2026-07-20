@@ -30,8 +30,9 @@ type Transport struct {
 	csrfMu    sync.RWMutex
 
 	// Session management
-	sessionID string
-	sessionMu sync.RWMutex
+	sessionID      string
+	sessionCookies map[string]*http.Cookie // SAP session cookies (sap-contextid / SAP_SESSIONID*) cached from responses and resent to keep stateful sessions affinity-bound (issue #88)
+	sessionMu      sync.RWMutex
 
 	// Cookie access protection: guards config.Cookies against concurrent
 	// read (Request/retryRequest) and write (callReauthFunc) access.
@@ -409,14 +410,43 @@ func (t *Transport) setDefaultHeaders(req *http.Request, opts *RequestOptions) {
 	}
 }
 
-// extractSessionID extracts the session ID from response cookies.
+// isSessionCookie reports whether a cookie carries SAP session affinity and
+// must be cached for resend. SAP issues per-system session cookies of the form
+// SAP_SESSIONID_<SID><client> (e.g. SAP_SESSIONID_A4H001) plus sap-contextid and
+// sap-usercontext. The previous exact-name match (=="SAP_SESSIONID") never
+// matched the real per-system name, so the session never became affinity-bound
+// and lock handles were rejected as InvalidLockHandle (issue #88/#91/#92/#98).
+func isSessionCookie(name string) bool {
+	return name == "sap-contextid" ||
+		name == "sap-usercontext" ||
+		strings.HasPrefix(name, "SAP_SESSIONID")
+}
+
+// storeSessionCookie caches a session cookie for resend on subsequent requests.
+func (t *Transport) storeSessionCookie(c *http.Cookie) {
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	if t.sessionCookies == nil {
+		t.sessionCookies = make(map[string]*http.Cookie)
+	}
+	t.sessionCookies[c.Name] = c
+}
+
+// extractSessionID extracts the session ID from response cookies and caches
+// every SAP session cookie for resend, so stateful lock→write→unlock sequences
+// stay on the same server-side session (issue #88).
 func (t *Transport) extractSessionID(resp *http.Response) string {
+	var id string
 	for _, cookie := range resp.Cookies() {
-		if cookie.Name == "sap-contextid" || cookie.Name == "SAP_SESSIONID" {
-			return cookie.Value
+		if !isSessionCookie(cookie.Name) {
+			continue
+		}
+		t.storeSessionCookie(cookie)
+		if id == "" {
+			id = cookie.Value
 		}
 	}
-	return ""
+	return id
 }
 
 // CSRF token accessors with mutex protection
@@ -558,11 +588,21 @@ func (t *Transport) callReauthFunc(ctx context.Context) error {
 	return nil
 }
 
-// addCookies adds user-provided cookies to a request under cookiesMu read lock.
+// addCookies adds user-provided cookies to a request, then re-sends the cached
+// SAP session cookies so each request rides the same stateful server session.
+// Without the resend, SAP routes the lock, write and unlock onto different
+// sessions and rejects the lock handle as InvalidLockHandle (HTTP 423) — the
+// root cause behind issues #88/#91/#92/#98.
 func (t *Transport) addCookies(req *http.Request) {
 	t.cookiesMu.RLock()
-	defer t.cookiesMu.RUnlock()
 	for name, value := range t.config.Cookies {
 		req.AddCookie(&http.Cookie{Name: name, Value: value})
 	}
+	t.cookiesMu.RUnlock()
+
+	t.sessionMu.RLock()
+	for _, c := range t.sessionCookies {
+		req.AddCookie(c)
+	}
+	t.sessionMu.RUnlock()
 }

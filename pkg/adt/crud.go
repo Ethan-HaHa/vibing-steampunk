@@ -57,23 +57,16 @@ func (c *Client) LockObject(ctx context.Context, objectURL string, accessMode st
 		return nil, err
 	}
 
-	// BTP / ABAP Cloud systems sometimes return a successful lock with
-	// MODIFICATION_SUPPORT="NoModification" — the lock acquired but the
-	// object is read-only via ADT (typical for SAP-delivered objects in
-	// hyperfocused mode, or systems where the user lacks the edit role).
-	// Without this guard the caller proceeds to PUT/POST and gets a
-	// confusing 423 InvalidLockHandle several seconds later. Surface it
-	// upfront so the user sees a clear, actionable error (issue #91).
-	if accessMode == "MODIFY" && strings.EqualFold(result.ModificationSupport, "NoModification") {
-		return nil, fmt.Errorf(
-			"object %s is not modifiable via ADT on this system "+
-				"(SAP returned modificationSupport=%q during LOCK). "+
-				"Common causes: read-only system class, missing developer/edit role, "+
-				"BTP ABAP Environment object outside the customer namespace, "+
-				"or hyperfocused mode locking the object as read-only",
-			objectURL, result.ModificationSupport)
-	}
-
+	// NOTE: a LOCK result may carry MODIFICATION_SUPPORT="NoModification".
+	// This is NOT a hard read-only block. The 423 InvalidLockHandle that
+	// originally motivated an up-front guard was caused by the session
+	// cookie not being resent between lock and write (see
+	// Transport.addCookies / extractSessionID), not by the object being
+	// read-only — once the stateful session is affinity-bound the write
+	// succeeds. We therefore no longer abort at LOCK; the value is kept
+	// in result.ModificationSupport for any caller that wants to warn,
+	// and a genuine write rejection surfaces as the real SAP error from
+	// the subsequent PUT/POST.
 	return result, nil
 }
 
@@ -633,6 +626,7 @@ func (c *Client) CreateObject(ctx context.Context, opts CreateObjectOptions) err
 		Query:       params,
 		Body:        []byte(body),
 		ContentType: contentType,
+		Stateful:    true, // Join the stateful session used by lock/write/unlock (issue #88)
 	})
 
 	// If we hit a lock conflict, try to clean up orphan lock and retry once
@@ -648,6 +642,7 @@ func (c *Client) CreateObject(ctx context.Context, opts CreateObjectOptions) err
 				Query:       params,
 				Body:        []byte(body),
 				ContentType: contentType,
+				Stateful:    true, // Keep creation in the same stateful session (issue #88)
 			})
 		}
 	}

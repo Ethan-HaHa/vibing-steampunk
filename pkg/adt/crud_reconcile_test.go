@@ -550,14 +550,15 @@ func TestCreateTestInclude_UsesStatefulSession(t *testing.T) {
 	}
 }
 
-// TestLockObject_RejectsNoModification covers the BTP / ABAP Cloud
-// case from issue #91: a successful LOCK can return
-// MODIFICATION_SUPPORT=NoModification to signal that the object is
-// read-only via ADT for this user/system. Before the fix the caller
-// proceeded to PUT and got a confusing 423 InvalidLockHandle several
-// seconds later. The expected behaviour is to fail at the LOCK call
-// with a clear, actionable error message.
-func TestLockObject_RejectsNoModification(t *testing.T) {
+// TestLockObject_AllowsNoModificationOnModifyLock pins the revised behaviour:
+// a LOCK result carrying MODIFICATION_SUPPORT=NoModification must NOT abort.
+// The flag is not a hard read-only signal — the 423 InvalidLockHandle that
+// originally motivated a hard error was caused by the session cookie not being
+// resent between lock and write (see Transport.addCookies), not by the object
+// being read-only. We return the LockResult (ModificationSupport preserved for
+// diagnostics) and let any genuine write rejection surface as the real SAP
+// error from the subsequent PUT/POST.
+func TestLockObject_AllowsNoModificationOnModifyLock(t *testing.T) {
 	const noModLockXML = `<?xml version="1.0" encoding="UTF-8"?>
 <asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
   <asx:values>
@@ -582,19 +583,19 @@ func TestLockObject_RejectsNoModification(t *testing.T) {
 	transport := NewTransportWithClient(cfg, mock)
 	client := NewClientWithTransport(cfg, transport)
 
-	_, err := client.LockObject(
+	result, err := client.LockObject(
 		context.Background(),
 		"/sap/bc/adt/oo/classes/ZREADONLY",
 		"MODIFY",
 	)
-	if err == nil {
-		t.Fatal("LockObject should have returned an error for NoModification, got nil")
+	if err != nil {
+		t.Fatalf("LockObject(MODIFY) must not abort on NoModification: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not modifiable") {
-		t.Errorf("error = %q, want to contain \"not modifiable\"", err.Error())
+	if result.LockHandle != "HANDLE-X" {
+		t.Errorf("LockHandle = %q, want HANDLE-X", result.LockHandle)
 	}
-	if !strings.Contains(err.Error(), "NoModification") {
-		t.Errorf("error = %q, want to surface the raw modificationSupport value", err.Error())
+	if result.ModificationSupport != "NoModification" {
+		t.Errorf("ModificationSupport = %q, want NoModification (preserved for diagnostics)", result.ModificationSupport)
 	}
 }
 
